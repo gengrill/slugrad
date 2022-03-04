@@ -144,7 +144,7 @@ namespace nanograd {
   public:
     void zero_grad() {
       for (auto p : parameters())
-        p->grad = 0;
+        *(p->grad) = 0;
     }
     virtual vector<shared_ptr<Value>> parameters() = 0; // TODO return iterator instead of vector?
   };
@@ -154,7 +154,7 @@ namespace nanograd {
     Value b;
     bool nonlin;
   public:
-    Neuron(size_t nin, bool lin=false) : b(0.0f), nonlin(!lin) {
+    Neuron(size_t nin, bool linear=true) : b(0.0f), nonlin(!linear) {
       for (int i=0; i<nin; ++i)
         w.push_back(make_shared<Value>(randn(-1, 1)));
     }
@@ -194,6 +194,83 @@ namespace nanograd {
       return nonlin ? nanograd::relu(act) : act;
     }
   };
+
+  class Layer : public Module {
+    vector<shared_ptr<Neuron>> neurons;
+  public:
+    Layer(size_t nin, size_t nout, bool linear=true) {
+      for (int i=0; i<nout; ++i) {
+        Neuron in(nin, linear);
+        neurons.push_back(make_shared<Neuron>(in));
+      }
+    }
+    vector<shared_ptr<Value>> parameters() {
+      vector<shared_ptr<Value>> params;
+      for (auto n : neurons)
+        for (auto p : n->parameters())
+          params.push_back(p);
+      return params;
+    }
+    vector<shared_ptr<Value>> operator() (const Value& x) {
+      std::cout << "Called Layer with input " << x.print() << std::endl;
+      std::cout << "neurons.size() = " << neurons.size() << std::endl;
+      vector<shared_ptr<Value>> out;
+      for (auto n : neurons) {
+        Value act = (*n)(x);
+        out.push_back(make_shared<Value>(act));
+      }
+      return out;
+    }
+    vector<shared_ptr<Value>> operator() (const vector<shared_ptr<Value>> x) {
+      std::cout << "Called Layer with " << x.size() << " inputs." << std::endl;
+      std::cout << "neurons.size() = " << neurons.size() << std::endl;
+      vector<shared_ptr<Value>> out;
+      for (auto n : neurons) {
+        Value act = (*n)(x);
+        out.push_back(make_shared<Value>(act));
+      }
+      return out;
+    }
+  };
+
+  class MLP : public Module {
+    vector<shared_ptr<Layer>> layers;
+  public:
+    MLP(size_t nin, vector<size_t> nouts) {
+      Layer in(nin, nouts[0]);
+      layers.push_back(make_shared<Layer>(in));
+      for (int i=0; i<nouts.size()-2; ++i) {
+        Layer hidden(nouts[i], nouts[i+1]);
+        layers.push_back(make_shared<Layer>(hidden));
+      }
+      Layer out(nouts[nouts.size()-1], nouts[nouts.size()-1], false);
+      layers.push_back(make_shared<Layer>(out));
+    }
+    vector<shared_ptr<Value>> parameters() {
+      vector<shared_ptr<Value>> params;
+      for (auto l : layers)
+        for (auto p : l->parameters())
+          params.push_back(p);
+      return params;
+    }
+    vector<shared_ptr<Value>> operator() (const Value& x) {
+      std::cout << "Called MLP with input " << x.print() << std::endl;
+      std::cout << "layers.size() = " << layers.size() << std::endl;
+      vector<shared_ptr<Value>> out;
+      out.push_back(make_shared<Value>(x));
+      for (auto l : layers)
+        out = (*l)(out);
+      return out;
+    }
+    vector<shared_ptr<Value>> operator() (const vector<shared_ptr<Value>> x) {
+      std::cout << "Called MLP with " << x.size() << " inputs." << std::endl;
+      std::cout << "layers.size() = " << layers.size() << std::endl;
+      vector<shared_ptr<Value>> out(x);
+      for (auto l : layers)
+        out = (*l)(out);
+      return out;
+    }    
+  };
 }// namespace nanograd
 
 int main(void) {
@@ -221,10 +298,20 @@ int main(void) {
   vector<shared_ptr<nanograd::Value>> x;
   x.push_back(make_shared<nanograd::Value>(x1));
   x.push_back(make_shared<nanograd::Value>(x2));
-  nanograd::Value y = in(x);
-  std::cout << "Got output from Neuron: " << y.print() << std::endl;
+  nanograd::Value y1 = in(x);
+  std::cout << "Got output from Neuron: " << y1.print() << std::endl;
   std::cout << in.print() << std::endl;
-  y.backward();
+  y1.backward();
   std::cout << in.print() << std::endl;
+  nanograd::Layer input(2, 2);
+  vector<shared_ptr<nanograd::Value>> outputs = input(x);
+  std::cout << "Got " << outputs.size() << " outputs from layer" << std::endl;
+  for (auto o : outputs)
+    o->backward();
+
+  nanograd::MLP model(2, {16, 16, 1});
+  vector<shared_ptr<nanograd::Value>> ys = model(x);
+  std::cout << "Got prediction " << ys[0]->print() << " from MLP" << std::endl;
+  ys[0]->backward();
   return 0;
 }
