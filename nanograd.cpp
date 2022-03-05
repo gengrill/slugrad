@@ -1,4 +1,6 @@
+// ~/projects/llvm-13/build/bin/clang++ -std=c++20 nanograd.cpp -o nanograd
 #include <cmath>
+#include <tuple>
 #include <ranges>
 #include <vector>
 #include <random>
@@ -7,19 +9,29 @@
 #include <stdexcept>
 #include <functional>
 #include <type_traits>
+#include <string_view>
 #include <unordered_set>
 
-using std::unordered_set;
+using std::tuple;
 using std::vector;
 using std::string;
 using std::mt19937;
 using std::function;
+using std::to_string;
 using std::shared_ptr;
 using std::make_shared;
 using std::random_device;
+using std::unordered_set;
 using std::uniform_real_distribution;
 
 namespace nanograd {
+
+  static const bool LOGGING=false;
+  static inline void log(string fmt, string lvl="DEBUG") {
+    if constexpr (LOGGING) {
+      std::cout<<"["+lvl+"]: "+fmt<<std::endl;
+    }
+  }
 
   float randn(int low, int high) {
     random_device dev;
@@ -28,7 +40,14 @@ namespace nanograd {
     return prng(rng);
   }
 
-  // Main data class, provides autograd functionality for scalars
+  tuple<vector<float>,vector<float>> make_moons(size_t samples, float noise) {
+    vector<float> X, Y;
+    for (size_t i=0; i<samples; ++i) {
+    }
+    return std::make_tuple<>(X,Y);
+  }
+
+  /** Main data class, provides autograd functionality by wrapping single-precision scalars. **/
   struct Value {
     shared_ptr<float> data;
     shared_ptr<float> grad;
@@ -39,9 +58,7 @@ namespace nanograd {
     Value(const Value& v) : data(v.data), grad(v.grad), _backward(v._backward), _prev(v._prev), op(v.op) {}
     Value(float data) : data(make_shared<float>(data)), grad(make_shared<float>(0.0f)), _backward([](){}), op("") {}
     Value(float data, string op) : data(make_shared<float>(data)), grad(make_shared<float>(0.0f)), _backward([](){}), op(op) {}
-    string print() const {
-      return "Value(data=" + std::to_string(*(this->data)) + " , grad=" + std::to_string(*(this->grad)) + ", op='" + this->op + "')";
-    }
+    string print() const { return "Value(data="+to_string(*(this->data))+", grad="+to_string(*(this->grad))+", op='"+this->op+"')"; }
     void backward() {
       vector<Value*> topo;
       unordered_set<Value*> visited;
@@ -53,73 +70,61 @@ namespace nanograd {
           topo.push_back(v);
         }
       };
-      std::cout << "backward(): calling build_topo" << std::endl;
       build_topo(this);
       *grad = 1.0f;
-      std::cout << print() << std::endl;
-      std::cout << "backward(): calling _backward on topo" << std::endl;
       for (auto it=topo.rbegin(); it != topo.rend(); ++it)
         (*it)->_backward();
     }
     friend Value operator+(const Value& v1, const Value& v2);
+    friend Value operator-(const Value& v1, const Value& v2);
     friend Value operator*(const Value& v1, const Value& v2);
+    friend Value operator/(const Value& v1, const Value& v2);
     template<typename T> friend Value pow(const Value& base, T exponent);
     friend Value relu(const Value& v);
     Value operator+(const float other) { return *this + Value(other); }
+    Value operator*(const float other) { return *this * Value(other); }
   };
 
   Value operator+(const Value& v1, const Value& v2) {
     Value out(*(v1.data) + *(v2.data), "+");
-    shared_ptr<Value> _v1 = make_shared<Value>(v1);
-    shared_ptr<Value> _v2 = make_shared<Value>(v2);
-    shared_ptr<Value> _out = make_shared<Value>(out);
-    out._prev.insert(_v1);
-    out._prev.insert(_v2);
-    out._backward = [_v1, _v2, _out](void) {
-      std::cout << "_backward +" << std::endl;
-      std::cout << "v1: " << _v1->print() << std::endl;
-      std::cout << "v2: " << _v2->print() << std::endl;
-      *(_v1->grad) = *(_v1->grad) + *(_out->grad);
-      *(_v2->grad) = *(_v2->grad) + *(_out->grad);
-      std::cout << "v1: " << _v1->print() << std::endl;
-      std::cout << "v2: " << _v2->print() << std::endl;
+    out._prev.insert(make_shared<Value>(v1));
+    out._prev.insert(make_shared<Value>(v2));
+    out._backward = [=](void) {
+      log("before _backward +[v1="+v1.print()+", v2="+v2.print()+"]");
+      *(v1.grad) = *(v1.grad) + *(out.grad);
+      *(v2.grad) = *(v2.grad) + *(out.grad);
+      log("after _backward +[v1="+v1.print()+", v2="+v2.print()+"]");
     };
     return out;
   }
 
+  Value operator-(const Value& v1, const Value& v2) { return v1 + (-1.0 * v2); }
+
   Value operator*(const Value& v1, const Value& v2) {
     Value out(*v1.data * *v2.data, "*");
-    shared_ptr<Value> _v1 = make_shared<Value>(v1);
-    shared_ptr<Value> _v2 = make_shared<Value>(v2);
-    shared_ptr<Value> _out = make_shared<Value>(out);
-    std::cout << "out: " << out.print() << std::endl;
+    log("out: " + out.print());
     out._prev.insert(make_shared<Value>(v1));
     out._prev.insert(make_shared<Value>(v2));
-    out._backward = [_v1, _v2, _out](void) {
-      std::cout << "_backward *" << std::endl;
-      std::cout << "v1: " << _v1->print() << std::endl;
-      std::cout << "v2: " << _v2->print() << std::endl;
-      *(_v1->grad) = *(_v1->grad) + *(_v2->data) * *(_out->grad);
-      *(_v2->grad) = *(_v2->grad) + *(_v1->data) * *(_out->grad);
-      std::cout << "v1: " << _v1->print() << std::endl;
-      std::cout << "v2: " << _v2->print() << std::endl;
+    out._backward = [=](void) {
+      log("before _backward *[v1="+v1.print()+", v2="+v2.print());
+      *(v1.grad) = *(v1.grad) + *(v2.data) * *(out.grad);
+      *(v2.grad) = *(v2.grad) + *(v1.data) * *(out.grad);
+      log("after _backward *[v1="+v1.print()+", v2="+v2.print());
     };
     return out;
   }
+
+  Value operator/(const Value& v1, const Value& v2) { return v1 * pow(v2, -1); }
 
   template<typename T>
   Value pow(const Value& base, const T exponent) {
     if constexpr (std::is_same_v<std::decay_t<const T>, int> || std::is_same_v<std::decay_t<const T>, float>) {
-      Value out(std::pow((float)*base.data, (float)exponent), "pow("+std::to_string(exponent)+")");
-      //shared_ptr<Value> _out = make_shared<Value>(out);
+      Value out(std::pow((float)*base.data, (float)exponent), "pow("+to_string(exponent)+")");
       out._prev.insert(make_shared<Value>(base));
-      out._backward = [&base, exponent, &out](void) {
-        std::cout << "_backward pow" << std::endl;
-        std::cout << "base: " << base.print() << std::endl;
-        std::cout << "exponent: " << std::to_string(exponent) << std::endl;
+      out._backward = [=](void) {
+        log("before _backward pow[base="+base.print()+", exponent="+to_string(exponent));
         *(base.grad) = *(base.grad) + exponent * (std::pow((float)*base.data, (float)exponent-1)) * (*out.grad);
-        std::cout << "base: " << base.print() << std::endl;
-        std::cout << "exponent: " << exponent << std::endl;
+        log("after _backward pow[base="+base.print()+", exponent="+to_string(exponent));
       };
       return out;
     }
@@ -127,16 +132,13 @@ namespace nanograd {
   }
 
   Value relu(const Value& v) {
-    std::cout << "called ReLU on " << v.print() << std::endl;
     Value out(0 < *v.data ? *v.data : 0, "ReLU");
-    shared_ptr<Value> _out = make_shared<Value>(out);
-    shared_ptr<Value> _v = make_shared<Value>(v);
-    out._prev.insert(_v);
-    out._backward = [_v, _out](void) {
-      std::cout << "_backward relu" << std::endl;
-      *(_v->grad) = *(_v->grad) + (int(0 < *(_v->data)) * (*(_out->grad)));
+    out._prev.insert(make_shared<Value>(v));
+    out._backward = [=](void) {
+      log("before _backward relu[v="+v.print());
+      *(v.grad) = *(v.grad) + (int(0 < *(v.data)) * (*(out.grad)));
+      log("after _backward relu[v="+v.print());
     };
-    std::cout << "calculated output value as " << out.print() << std::endl;
     return out;
   }
 
@@ -146,7 +148,7 @@ namespace nanograd {
       for (auto p : parameters())
         *(p->grad) = 0;
     }
-    virtual vector<shared_ptr<Value>> parameters() = 0; // TODO return iterator instead of vector?
+    virtual vector<shared_ptr<Value>> parameters() = 0;
   };
 
   class Neuron : public Module {
@@ -172,26 +174,19 @@ namespace nanograd {
       return params;
     }
     Value operator() (const Value& x) {
-      std::cout << "Called Neuron with input " << x.print() << std::endl;
-      std::cout << "w.size() = " << w.size() << std::endl;
-      std::cout << "*w[0] = " << w[0]->print() << std::endl;
+      log("Called Neuron with input " + x.print());
       Value act = *w[0] * x + b;
-      std::cout << "calculated Neuron activation as " << act.print() << std::endl;
+      log("calculated Neuron activation as " + act.print());
       return nonlin ? nanograd::relu(act) : act;
     }
     Value operator() (const vector<shared_ptr<Value>> x) {
-      std::cout << "Called Neuron with " << x.size() << " inputs." << std::endl;
-      vector<shared_ptr<Value>> tmp;
-      for (int i=0; i<w.size(); ++i)
-        tmp.push_back(make_shared<Value>((*x[i]) * (*w[i])));
-      //std::transform(x.begin(), x.end(), w.begin(), std::back_inserter(tmp), [] (const auto& xi, const auto& wi) {
-      //  return (*xi) * (*wi);
-      //});
+      log("Called Neuron with " + to_string(x.size()) + " inputs.");
       Value act;
-      for (int i=0; i<tmp.size(); ++i)
-        act = act + (*tmp[i]);
-      //Value act(std::accumulate(tmp.begin(), tmp.end(), 0) + b);
-      return nonlin ? nanograd::relu(act) : act;
+      for (int i=0; i<w.size(); ++i)
+        act = act + (*x[i]) * (*w[i]);
+      act = nonlin ? nanograd::relu(act) : act;
+      log("calculated Neuron activation as " + act.print());
+      return act;
     }
   };
 
@@ -212,8 +207,8 @@ namespace nanograd {
       return params;
     }
     vector<shared_ptr<Value>> operator() (const Value& x) {
-      std::cout << "Called Layer with input " << x.print() << std::endl;
-      std::cout << "neurons.size() = " << neurons.size() << std::endl;
+      log("Called Layer with input " + x.print());
+      log("neurons.size() = " + to_string(neurons.size()));
       vector<shared_ptr<Value>> out;
       for (auto n : neurons) {
         Value act = (*n)(x);
@@ -222,8 +217,8 @@ namespace nanograd {
       return out;
     }
     vector<shared_ptr<Value>> operator() (const vector<shared_ptr<Value>> x) {
-      std::cout << "Called Layer with " << x.size() << " inputs." << std::endl;
-      std::cout << "neurons.size() = " << neurons.size() << std::endl;
+      log("Called Layer with " + to_string(x.size()) + " inputs.");
+      log("neurons.size() = " + to_string(neurons.size()));
       vector<shared_ptr<Value>> out;
       for (auto n : neurons) {
         Value act = (*n)(x);
@@ -254,8 +249,8 @@ namespace nanograd {
       return params;
     }
     vector<shared_ptr<Value>> operator() (const Value& x) {
-      std::cout << "Called MLP with input " << x.print() << std::endl;
-      std::cout << "layers.size() = " << layers.size() << std::endl;
+      log("Called MLP with input " + x.print());
+      log("layers.size() = " + to_string(layers.size()));
       vector<shared_ptr<Value>> out;
       out.push_back(make_shared<Value>(x));
       for (auto l : layers)
@@ -263,8 +258,8 @@ namespace nanograd {
       return out;
     }
     vector<shared_ptr<Value>> operator() (const vector<shared_ptr<Value>> x) {
-      std::cout << "Called MLP with " << x.size() << " inputs." << std::endl;
-      std::cout << "layers.size() = " << layers.size() << std::endl;
+      log("Called MLP with " + to_string(x.size()) + " inputs.");
+      log("layers.size() = " + to_string(layers.size()));
       vector<shared_ptr<Value>> out(x);
       for (auto l : layers)
         out = (*l)(out);
@@ -308,10 +303,13 @@ int main(void) {
   std::cout << "Got " << outputs.size() << " outputs from layer" << std::endl;
   for (auto o : outputs)
     o->backward();
-
   nanograd::MLP model(2, {16, 16, 1});
   vector<shared_ptr<nanograd::Value>> ys = model(x);
   std::cout << "Got prediction " << ys[0]->print() << " from MLP" << std::endl;
   ys[0]->backward();
+  std::cout << "Printing model parameters:" << std::endl;
+  for (auto p : model.parameters())
+    if (*(p->grad) != 0)
+      std::cout << p->print() << std::endl;
   return 0;
 }
