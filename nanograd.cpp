@@ -1,6 +1,5 @@
 // ~/projects/llvm-13/build/bin/clang++ -std=c++20 nanograd.cpp -o nanograd
 #include <cmath>
-#include <ranges>
 #include <vector>
 #include <random>
 #include <memory>
@@ -8,10 +7,7 @@
 #include <numeric>
 #include <iostream>
 #include <stdexcept>
-#include <algorithm>
 #include <functional>
-#include <type_traits>
-#include <string_view>
 #include <unordered_set>
 
 using std::pair;
@@ -27,6 +23,7 @@ using std::random_shuffle;
 
 namespace nanograd {
 
+  /** No levels, this will log EVERYTHING (only really useful for very low-level debugging) **/
   static const bool LOGGING=false;
   static inline void log(string fmt, string lvl="DEBUG") {
     if constexpr (LOGGING) {
@@ -34,6 +31,7 @@ namespace nanograd {
     }
   }
 
+  /** For generating random floats (default is uniform distribution) **/
   template <typename T = std::uniform_real_distribution<float>>
   float randn(float low, float high) {
     std::random_device dev;
@@ -42,6 +40,7 @@ namespace nanograd {
     return prng(rng);
   }
 
+  /** Synthetic non-linearly separable dataset (similar to sklearn.datasets.make_moons) **/
   pair<vector<pair<float, float>>, vector<int>> make_moons(size_t samples, float noise=0.0) {
     vector<pair<float,float>> X;
     vector<int> Y;
@@ -286,53 +285,13 @@ namespace nanograd {
 }// namespace nanograd
 
 int main(void) {
-  /*nanograd::Value a(13);
-  nanograd::Value b(-42.3);
-  nanograd::Value c = a + b;
-  nanograd::Value d = nanograd::pow(a, 2);
-  std::cout << "a: " << a.print() << std::endl;
-  std::cout << "b: " << b.print() << std::endl;
-  std::cout << "c: " << c.print() << std::endl;
-  std::cout << "d: " << d.print() << std::endl;
-  c.backward();
-  std::cout << "a: " << a.print() << std::endl;
-  std::cout << "b: " << b.print() << std::endl;
-  std::cout << "c: " << c.print() << std::endl;
-  std::cout << "d: " << d.print() << std::endl;
-  d.backward();
-  std::cout << "a: " << a.print() << std::endl;
-  std::cout << "b: " << b.print() << std::endl;
-  std::cout << "c: " << c.print() << std::endl;
-  std::cout << "d: " << d.print() << std::endl;
-  nanograd::Neuron in(2);
-  nanograd::Value x1(99.0f);
-  nanograd::Value x2(1.22f);
-  vector<shared_ptr<nanograd::Value>> x;
-  x.push_back(make_shared<nanograd::Value>(x1));
-  x.push_back(make_shared<nanograd::Value>(x2));
-  nanograd::Value y1 = in(x);
-  std::cout << "Got output from Neuron: " << y1.print() << std::endl;
-  std::cout << in.print() << std::endl;
-  y1.backward();
-  std::cout << in.print() << std::endl;
-  nanograd::Layer input(2, 2);
-  vector<shared_ptr<nanograd::Value>> outputs = input(x);
-  std::cout << "Got " << outputs.size() << " outputs from layer" << std::endl;
-  for (auto o : outputs)
-    o->backward();*/
-  size_t no_samples = 100;
   vector<int> index;
+  size_t no_samples = 100;
   for (size_t i=0; i<no_samples; ++i)
     index.push_back(i);
-  //std::random_shuffle(index.begin(), index.end());
+  std::random_shuffle(index.begin(), index.end());
   nanograd::MLP model(2, {16, 16, 1});
   auto [Xs, Ys] = nanograd::make_moons(100, 0.01);
-  //for (auto &[x1,x2] : Xs)
-  //  std::cout << "(" << x1 << "," << x2 << "), ";
-  //vector<shared_ptr<nanograd::Value>> ys = model(x);
-  //std::cout << "Got prediction " << ys[0]->print() << " from MLP" << std::endl;
-  //ys[0]->backward();
-
   // Training Loop
   for (int k=0; k<100; ++k) {
     vector<int> accuracies;
@@ -356,7 +315,7 @@ int main(void) {
     nanograd::Value reg_loss;
     vector<shared_ptr<nanograd::Value>> params = model.parameters();
     std::for_each(params.begin(), params.end(), [&](shared_ptr<nanograd::Value> p){ reg_loss = reg_loss + (*p) * (*p); });
-    float alpha = 1e-4;
+    float alpha = 1e-2;
     nanograd::Value total_loss = loss + alpha * reg_loss;
     float accuracy = std::accumulate(accuracies.begin(), accuracies.end(), 0.0f) / accuracies.size();
     float learning_rate = 1.0 - 0.9*k/100;
@@ -366,4 +325,5 @@ int main(void) {
       *(p->data) = *(p->data) - learning_rate * *(p->grad);
     std::cout << "Step " << k << " Loss=" << *loss.data/index.size() << ", Accuracy=" << accuracy << std::endl;
   }
+  return 0;
 }
