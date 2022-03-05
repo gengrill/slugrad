@@ -1,28 +1,29 @@
 // ~/projects/llvm-13/build/bin/clang++ -std=c++20 nanograd.cpp -o nanograd
 #include <cmath>
-#include <tuple>
 #include <ranges>
 #include <vector>
 #include <random>
 #include <memory>
+#include <utility>
+#include <numeric>
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <string_view>
 #include <unordered_set>
 
-using std::tuple;
+using std::pair;
 using std::vector;
 using std::string;
-using std::mt19937;
 using std::function;
+using std::make_pair;
 using std::to_string;
 using std::shared_ptr;
 using std::make_shared;
-using std::random_device;
 using std::unordered_set;
-using std::uniform_real_distribution;
+using std::random_shuffle;
 
 namespace nanograd {
 
@@ -33,18 +34,34 @@ namespace nanograd {
     }
   }
 
-  float randn(int low, int high) {
-    random_device dev;
-    mt19937 rng(dev());
-    uniform_real_distribution<float> prng(low, high);
+  template <typename T = std::uniform_real_distribution<float>>
+  float randn(float low, float high) {
+    std::random_device dev;
+    std::mt19937 rng(dev());
+    T prng(low, high);
     return prng(rng);
   }
 
-  tuple<vector<float>,vector<float>> make_moons(size_t samples, float noise) {
-    vector<float> X, Y;
-    for (size_t i=0; i<samples; ++i) {
+  pair<vector<pair<float, float>>, vector<int>> make_moons(size_t samples, float noise=0.0) {
+    vector<pair<float,float>> X;
+    vector<int> Y;
+    const double PI = std::acos(-1);
+    size_t sper_moon = samples/2;
+    // first moon
+    for (size_t i=0; i<sper_moon; ++i) {
+      float x = std::cos(i * PI/sper_moon) + randn<std::normal_distribution<float>>(0.0, noise);
+      float y = std::sin(i * PI/sper_moon) + randn<std::normal_distribution<float>>(0.0, noise);
+      X.push_back(make_pair(x,y));
+      Y.push_back(-1);
     }
-    return std::make_tuple<>(X,Y);
+    // second moon
+    for (size_t i=0; i<sper_moon; ++i) {
+      float x = 1 - std::cos(i * PI/sper_moon) + randn<std::normal_distribution<float>>(0.0, noise);
+      float y = 1 - std::sin(i * PI/sper_moon) - 0.5  + randn<std::normal_distribution<float>>(0.0, noise);
+      X.push_back(make_pair(x,y));
+      Y.push_back(1);
+    }
+    return make_pair(X, Y);
   }
 
   /** Main data class, provides autograd functionality by wrapping single-precision scalars. **/
@@ -146,7 +163,7 @@ namespace nanograd {
   public:
     void zero_grad() {
       for (auto p : parameters())
-        *(p->grad) = 0;
+        *(p->grad) = 0.0f;
     }
     virtual vector<shared_ptr<Value>> parameters() = 0;
   };
@@ -269,7 +286,7 @@ namespace nanograd {
 }// namespace nanograd
 
 int main(void) {
-  nanograd::Value a(13);
+  /*nanograd::Value a(13);
   nanograd::Value b(-42.3);
   nanograd::Value c = a + b;
   nanograd::Value d = nanograd::pow(a, 2);
@@ -302,14 +319,51 @@ int main(void) {
   vector<shared_ptr<nanograd::Value>> outputs = input(x);
   std::cout << "Got " << outputs.size() << " outputs from layer" << std::endl;
   for (auto o : outputs)
-    o->backward();
+    o->backward();*/
+  size_t no_samples = 100;
+  vector<int> index;
+  for (size_t i=0; i<no_samples; ++i)
+    index.push_back(i);
+  //std::random_shuffle(index.begin(), index.end());
   nanograd::MLP model(2, {16, 16, 1});
-  vector<shared_ptr<nanograd::Value>> ys = model(x);
-  std::cout << "Got prediction " << ys[0]->print() << " from MLP" << std::endl;
-  ys[0]->backward();
-  std::cout << "Printing model parameters:" << std::endl;
-  for (auto p : model.parameters())
-    if (*(p->grad) != 0)
-      std::cout << p->print() << std::endl;
-  return 0;
+  auto [Xs, Ys] = nanograd::make_moons(100, 0.01);
+  //for (auto &[x1,x2] : Xs)
+  //  std::cout << "(" << x1 << "," << x2 << "), ";
+  //vector<shared_ptr<nanograd::Value>> ys = model(x);
+  //std::cout << "Got prediction " << ys[0]->print() << " from MLP" << std::endl;
+  //ys[0]->backward();
+
+  // Training Loop
+  for (int k=0; k<100; ++k) {
+    vector<int> accuracies;
+    vector<shared_ptr<nanograd::Value>> xlosses;
+    // One Epoch
+    for (int i=0; i<index.size(); ++i) {
+      auto [x0, x1] = Xs[index[i]];
+      int y = Ys[index[i]];
+      vector<shared_ptr<nanograd::Value>> x;
+      x.push_back(make_shared<nanograd::Value>(nanograd::Value(x0)));
+      x.push_back(make_shared<nanograd::Value>(nanograd::Value(x1)));
+      vector<shared_ptr<nanograd::Value>> score = model(x);
+      nanograd::Value xloss = nanograd::relu(1 + nanograd::Value(-y) * (*score[0]));
+      xlosses.push_back(make_shared<nanograd::Value>(xloss));
+      accuracies.push_back((0 < y) == (0 < *(score[0]->data)));
+      //std::cout << xloss.print() << std::endl;
+    }
+    nanograd::Value loss;
+    std::for_each(xlosses.begin(), xlosses.end(), [&](shared_ptr<nanograd::Value> xl){ loss = loss + (*xl); });
+    loss = loss * (1.0f / index.size());
+    nanograd::Value reg_loss;
+    vector<shared_ptr<nanograd::Value>> params = model.parameters();
+    std::for_each(params.begin(), params.end(), [&](shared_ptr<nanograd::Value> p){ reg_loss = reg_loss + (*p) * (*p); });
+    float alpha = 1e-4;
+    nanograd::Value total_loss = loss + alpha * reg_loss;
+    float accuracy = std::accumulate(accuracies.begin(), accuracies.end(), 0.0f) / accuracies.size();
+    float learning_rate = 1.0 - 0.9*k/100;
+    model.zero_grad();
+    total_loss.backward();
+    for (auto p : model.parameters())
+      *(p->data) = *(p->data) - learning_rate * *(p->grad);
+    std::cout << "Step " << k << " Loss=" << *loss.data/index.size() << ", Accuracy=" << accuracy << std::endl;
+  }
 }
